@@ -3,6 +3,11 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
+
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 
 import '../services/locator.dart';
 import '../utils/mlkit_image.dart';
@@ -54,11 +59,20 @@ class _EnrollScreenState extends State<EnrollScreen> {
       if (faces.isEmpty) {
         setState(() => _status = 'Acerque su rostro a la cámara');
       } else {
-        final imgImage = yuv420ToImage(image);
-        final data = preprocessTo112Rgb(imgImage);
+        final img.Image full = yuv420ToImage(image);
+        final Face first = faces.first;
+        final Rect box = first.boundingBox;
+        final int x = box.left.clamp(0, full.width - 1).toInt();
+        final int y = box.top.clamp(0, full.height - 1).toInt();
+        final int w = box.width.clamp(1, full.width - x).toInt();
+        final int h = box.height.clamp(1, full.height - y).toInt();
+        final img.Image cropped = img.copyCrop(full, x: x, y: y, width: w, height: h);
+        final data = preprocessTo112Rgb(cropped);
         final embedding = ServiceLocator.embedder.runEmbedding(data);
         if (!mounted) return;
-        await _showSaveDialog(embedding);
+        // Guarda snapshot del rostro detectado
+        final String? savedPath = await _saveFaceImage(cropped);
+        await _showSaveDialog(embedding, imagePath: savedPath);
       }
     } catch (e) {
       setState(() => _status = 'Error: $e');
@@ -67,7 +81,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
     }
   }
 
-  Future<void> _showSaveDialog(List<double> embedding) async {
+  Future<void> _showSaveDialog(List<double> embedding, {String? imagePath}) async {
     final TextEditingController controller = TextEditingController();
     await showDialog<void>(
       context: context,
@@ -86,7 +100,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
             onPressed: () async {
               final String id = controller.text.trim();
               if (id.isEmpty) return;
-              await ServiceLocator.recognition.saveIdentity(id, embedding);
+              await ServiceLocator.recognition.saveIdentity(id, embedding, imagePath: imagePath);
               if (!mounted) return;
               Navigator.of(context).pop();
               if (!mounted) return;
@@ -97,6 +111,24 @@ class _EnrollScreenState extends State<EnrollScreen> {
         ],
       ),
     );
+  }
+
+  Future<String?> _saveFaceImage(img.Image imgImage) async {
+    try {
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final Directory facesDir = Directory('${appDir.path}/faces');
+      if (!await facesDir.exists()) {
+        await facesDir.create(recursive: true);
+      }
+      final String filePath = '${facesDir.path}/face_${DateTime.now().millisecondsSinceEpoch}.png';
+      // Convertir a PNG
+      final bytes = img.encodePng(imgImage);
+      final file = File(filePath);
+      await file.writeAsBytes(bytes, flush: true);
+      return filePath;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

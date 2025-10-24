@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:collection/collection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,9 +10,12 @@ class RecognitionService {
   static const String _kDbKey = 'face_db_v1';
   final SharedPreferences _prefs;
 
-  Future<void> saveIdentity(String personId, List<double> embedding) async {
+  Future<void> saveIdentity(String personId, List<double> embedding, {String? imagePath}) async {
     final Map<String, dynamic> db = await _readDb();
-    db[personId] = embedding;
+    db[personId] = <String, dynamic>{
+      'embedding': embedding,
+      'imagePath': imagePath,
+    };
     await _prefs.setString(_kDbKey, jsonEncode(db));
   }
 
@@ -21,13 +25,47 @@ class RecognitionService {
     return jsonDecode(json) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> readAll() async {
+    return _readDb();
+  }
+
+  Future<void> deleteIdentity(String personId, {bool deleteImage = true}) async {
+    final Map<String, dynamic> db = await _readDb();
+    final dynamic val = db.remove(personId);
+    await _prefs.setString(_kDbKey, jsonEncode(db));
+    if (deleteImage) {
+      try {
+        if (val is Map && val['imagePath'] is String) {
+          final String path = val['imagePath'] as String;
+          final File f = File(path);
+          if (await f.exists()) {
+            await f.delete();
+          }
+        }
+      } catch (_) {
+        // Ignorar errores de borrado de archivo
+      }
+    }
+  }
+
   Future<String?> identify(List<double> embedding, {double threshold = 1.05}) async {
     final Map<String, dynamic> db = await _readDb();
     String? bestId;
     double bestDist = double.infinity;
     for (final MapEntry<String, dynamic> e in db.entries) {
-      final List<dynamic> vector = e.value as List<dynamic>;
-      final double dist = _euclidean(embedding, vector.cast<double>());
+      final dynamic val = e.value;
+      List<double>? vector;
+      if (val is List) {
+        // Compat: registros antiguos solo tenían lista de embedding
+        vector = val.cast<double>();
+      } else if (val is Map) {
+        final List<dynamic>? emb = val['embedding'] as List<dynamic>?;
+        if (emb != null) {
+          vector = emb.cast<double>();
+        }
+      }
+      if (vector == null) continue;
+      final double dist = _euclidean(embedding, vector);
       if (dist < bestDist) {
         bestDist = dist;
         bestId = e.key;
